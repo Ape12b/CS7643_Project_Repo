@@ -18,7 +18,8 @@ import os.path
 import shutil
 
 import numpy as np
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior()
 from absl import flags
 from tqdm import trange, tqdm
 
@@ -45,7 +46,7 @@ class Model:
         self.dataset = dataset
         self.session = None
         self.tmp = EasyDict(print_queue=[], cache=EasyDict())
-        self.step = tf.train.get_or_create_global_step()
+        self.step = tf.compat.v1.train.get_or_create_global_step()
         self.ops = self.model(**kwargs)
         self.ops.update_step = tf.assign_add(self.step, FLAGS.batch)
         self.add_summaries(**kwargs)

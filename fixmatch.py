@@ -15,7 +15,8 @@ import functools
 import os
 
 import numpy as np
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior()
 from absl import app
 from absl import flags
 from tqdm import trange
@@ -84,10 +85,10 @@ class FixMatch(CTAReMixMatch):
 
     def model(self, batch, lr, wd, wu, confidence, uratio, ema=0.999, **kwargs):
         hwc = [self.dataset.height, self.dataset.width, self.dataset.colors]
-        xt_in = tf.placeholder(tf.float32, [batch] + hwc, 'xt')  # Training labeled
-        x_in = tf.placeholder(tf.float32, [None] + hwc, 'x')  # Eval images
-        y_in = tf.placeholder(tf.float32, [batch * uratio, 2] + hwc, 'y')  # Training unlabeled (weak, strong)
-        l_in = tf.placeholder(tf.int32, [batch], 'labels')  # Labels
+        xt_in = tf.compat.v1.placeholder(tf.float32, [batch] + hwc, 'xt')  # Training labeled
+        x_in = tf.compat.v1.placeholder(tf.float32, [None] + hwc, 'x')  # Eval images
+        y_in = tf.compat.v1.placeholder(tf.float32, [batch * uratio, 2] + hwc, 'y')  # Training unlabeled (weak, strong)
+        l_in = tf.compat.v1.placeholder(tf.int32, [batch], 'labels')  # Labels
 
         lrate = tf.clip_by_value(tf.to_float(self.step) / (FLAGS.train_kimg << 10), 0, 1)
         lr *= tf.cos(lrate * (7 * np.pi) / (2 * 8))

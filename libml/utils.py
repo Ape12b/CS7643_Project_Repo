@@ -17,7 +17,8 @@ import os
 import re
 
 import numpy as np
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior()
 from absl import flags, logging
 from tensorflow.python.client import device_lib
 

@@ -23,8 +23,8 @@ pip install -r requirements.txt
 ### Install datasets
 
 ```bash
-export ML_DATA="path to where you want the datasets saved"
-export PYTHONPATH=$PYTHONPATH:"path to the FixMatch"
+export ML_DATA="C:\Users\xanma\Documents\GeorgiaTech\CS7643_Project_Repo\data"
+export PYTHONPATH=$PYTHONPATH:"C:\Users\xanma\Documents\GeorgiaTech\CS7643_Project_Repo\fixmatch.py"
 
 # Download datasets
 CUDA_VISIBLE_DEVICES= ./scripts/create_datasets.py

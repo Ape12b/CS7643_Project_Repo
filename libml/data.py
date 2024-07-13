@@ -19,7 +19,8 @@ import itertools
 import os
 
 import numpy as np
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior()
 from absl import app
 from absl import flags
 from tqdm import tqdm
@@ -61,7 +62,7 @@ FLAGS = flags.FLAGS
 def _data_setup():
     # set up data directory
     global DATA_DIR
-    DATA_DIR = FLAGS.data_dir or os.environ['ML_DATA']
+    DATA_DIR = "data"
 
 
 app.call_after_init(_data_setup)
@@ -128,7 +129,7 @@ class DataSet:
     @classmethod
     def from_files(cls, filenames: list, augment_fn: AugmentPair, parse_fn=record_parse, image_shape=None):
         filenames_in = filenames
-        filenames = sorted(sum([tf.gfile.Glob(x) for x in filenames], []))
+        filenames = sorted(sum([tf.io.gfile.glob(x) for x in filenames], []))
         if not filenames:
             raise ValueError('Empty dataset, did you mount gcsfuse bucket?', filenames_in)
         if len(filenames) > 4:
