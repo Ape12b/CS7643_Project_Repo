@@ -87,7 +87,8 @@ class FixMatch(CTAReMixMatch):
         hwc = [self.dataset.height, self.dataset.width, self.dataset.colors]
         xt_in = tf.compat.v1.placeholder(tf.float32, [batch] + hwc, 'xt')  # Training labeled
         x_in = tf.compat.v1.placeholder(tf.float32, [None] + hwc, 'x')  # Eval images
-        y_in = tf.compat.v1.placeholder(tf.float32, [batch * uratio, 2] + hwc, 'y')  # Training unlabeled (weak, strong)
+        # y_in = tf.compat.v1.placeholder(tf.float32, [batch * uratio, 2] + hwc, 'y')  # Training unlabeled (weak, strong)
+        y_in = tf.placeholder(tf.float32, [batch * uratio, FLAGS.K + 1] + hwc, 'y')  ### Augmentation Anchoring - Training unlabeled (weak, strong1, strong2, ...)
         l_in = tf.compat.v1.placeholder(tf.int32, [batch], 'labels')  # Labels
 
         lrate = tf.clip_by_value(tf.to_float(self.step) / (FLAGS.train_kimg << 10), 0, 1)
@@ -97,12 +98,16 @@ class FixMatch(CTAReMixMatch):
         # Compute logits for xt_in and y_in
         classifier = lambda x, **kw: self.classifier(x, **kw, **kwargs).logits
         skip_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
-        x = utils.interleave(tf.concat([xt_in, y_in[:, 0], y_in[:, 1]], 0), 2 * uratio + 1)
+        #x = utils.interleave(tf.concat([xt_in, y_in[:, 0], y_in[:, 1]], 0), 2 * uratio + 1)
+        x = utils.interleave(tf.concat([xt_in] + [y_in[:, i] for i in range(FLAGS.K + 1)], 0), FLAGS.K + 2) ### Augmentation Anchoring
         logits = utils.para_cat(lambda x: classifier(x, training=True), x)
-        logits = utils.de_interleave(logits, 2 * uratio+1)
+        # logits = utils.de_interleave(logits, 2 * uratio+1)
+        logits = utils.de_interleave(logits, FLAGS.K + 2) ### Augmentation Anchoring
         post_ops = [v for v in tf.get_collection(tf.GraphKeys.UPDATE_OPS) if v not in skip_ops]
         logits_x = logits[:batch]
-        logits_weak, logits_strong = tf.split(logits[batch:], 2)
+        # logits_weak, logits_strong = tf.split(logits[batch:], 2)
+        logits_weak = logits[batch:batch*(uratio+1)] ### Augmentation Anchoring
+        logits_strong = tf.reshape(logits[batch*(uratio+1):], [batch*uratio, FLAGS.K, -1]) ### Augmentation Anchoring
         del logits, skip_ops
 
         # Labeled cross-entropy
@@ -112,8 +117,14 @@ class FixMatch(CTAReMixMatch):
 
         # Pseudo-label cross entropy for unlabeled data
         pseudo_labels = tf.stop_gradient(tf.nn.softmax(logits_weak))
-        loss_xeu = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=tf.argmax(pseudo_labels, axis=1),
-                                                                  logits=logits_strong)
+        # loss_xeu = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=tf.argmax(pseudo_labels, axis=1),
+        #                                                           logits=logits_strong)
+
+        loss_xeu = tf.nn.sparse_softmax_cross_entropy_with_logits( ### Augmentation Anchoring
+            labels=tf.tile(tf.expand_dims(tf.argmax(pseudo_labels, axis=1), 1), [1, FLAGS.K]),
+            logits=logits_strong)
+        loss_xeu = tf.reduce_mean(loss_xeu, axis=1) ### Augmentation Anchoring -  Average over K strong augmentations 
+
         pseudo_mask = tf.to_float(tf.reduce_max(pseudo_labels, axis=1) >= confidence)
         tf.summary.scalar('monitors/mask', tf.reduce_mean(pseudo_mask))
         loss_xeu = tf.reduce_mean(loss_xeu * pseudo_mask)
@@ -142,7 +153,8 @@ class FixMatch(CTAReMixMatch):
 def main(argv):
     utils.setup_main()
     del argv  # Unused.
-    dataset = data.PAIR_DATASETS()[FLAGS.dataset]()
+    #dataset = data.PAIR_DATASETS()[FLAGS.dataset]()
+    dataset = data.MANY_DATASETS()[FLAGS.dataset]() ### Augmentation Anchoring - Use datasets built with 'many_augment_function' from augment.py file
     log_width = utils.ilog2(dataset.width)
     model = FixMatch(
         os.path.join(FLAGS.train_dir, dataset.name, FixMatch.cta_name()),
@@ -169,7 +181,8 @@ if __name__ == '__main__':
     flags.DEFINE_integer('filters', 32, 'Filter size of convolutions.')
     flags.DEFINE_integer('repeat', 4, 'Number of residual layers per stage.')
     flags.DEFINE_integer('scales', 0, 'Number of 2x2 downscalings in the classifier.')
-    flags.DEFINE_integer('uratio', 7, 'Unlabeled batch size ratio.')
+    # flags.DEFINE_integer('uratio', 7, 'Unlabeled batch size ratio.')
+    flags.DEFINE_integer('uratio', 4, 'Unlabeled batch size ratio.') ### Augmentation Anchoring - The paper used mu = 4
     FLAGS.set_default('augment', 'd.d.d')
     FLAGS.set_default('dataset', 'cifar10.3@250-1')
     FLAGS.set_default('batch', 64)
