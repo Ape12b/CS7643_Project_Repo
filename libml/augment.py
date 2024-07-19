@@ -45,7 +45,9 @@ AUGMENT_ENUM = 'd x m aa aac ra rac'.split() + ['r%d_%d_%d' % (nops, mag, cutout
                                                 itertools.product(range(1, 5), range(1, 16), range(0, 100, 25))] + [
                    'rac%d' % (mag) for mag in range(1, 10)]
 
-flags.DEFINE_integer('K', 1, 'Number of strong augmentation for unlabeled data.')
+# flags.DEFINE_integer('K', 1, 'Number of strong augmentation for unlabeled data.')
+flags.DEFINE_integer('K', 4, 'Number of strong augmentation for unlabeled data.') ### Augmentation Anchoring - M = 4
+
 flags.DEFINE_enum('augment', 'd.d',
                   [x + '.' + y for x, y in itertools.product(AUGMENT_ENUM, AUGMENT_ENUM)] +
                   [x + '.' + y + '.' + z for x, y, z in itertools.product(AUGMENT_ENUM, AUGMENT_ENUM, AUGMENT_ENUM)] + [
