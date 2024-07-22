@@ -88,7 +88,7 @@ class FixMatch(CTAReMixMatch):
         xt_in = tf.compat.v1.placeholder(tf.float32, [batch] + hwc, 'xt')  # Training labeled
         x_in = tf.compat.v1.placeholder(tf.float32, [None] + hwc, 'x')  # Eval images
         y_in = tf.compat.v1.placeholder(tf.float32, [batch * uratio, 2] + hwc, 'y')  # Training unlabeled (weak, strong)
-        l_in = tf.compat.v1.placeholder(tf.int32, [batch], 'labels')  # Labels
+        l_in = tf.compat.v1.placeholder(tf.int32, [batch], 'labels')  # Labels #pb
 
         lrate = tf.clip_by_value(tf.to_float(self.step) / (FLAGS.train_kimg << 10), 0, 1)
         lr *= tf.cos(lrate * (7 * np.pi) / (2 * 8))
@@ -111,12 +111,27 @@ class FixMatch(CTAReMixMatch):
         tf.summary.scalar('losses/xe', loss_xe)
 
         # Pseudo-label cross entropy for unlabeled data
-        pseudo_labels = tf.stop_gradient(tf.nn.softmax(logits_weak))
-        loss_xeu = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=tf.argmax(pseudo_labels, axis=1),
-                                                                  logits=logits_strong)
-        pseudo_mask = tf.to_float(tf.reduce_max(pseudo_labels, axis=1) >= confidence)
+        
+        # pseudo_labels = tf.stop_gradient(tf.nn.softmax(logits_weak)) ### qb
+        #loss_xeu = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=tf.argmax(pseudo_labels, axis=1), ### qb-hat
+        #                                                          logits=logits_strong) ### pm(y|A(ub))
+
+        ###====== Distribution Alignment - eqution (8) =======###
+        p_y_x = tf.reduce_mean(tf.one_hot(l_in, self.nclass), axis=0)
+        p_m_y_u = tf.reduce_mean(tf.nn.softmax(logits_weak), axis=0)
+        pseudo_labels = tf.nn.softmax(logits_weak) * (p_y_x / (p_m_y_u + 1e-6)) # added 1e-6 in case p_m_y_u is zero
+        pseudo_labels = pseudo_labels / tf.reduce_sum(pseudo_labels, axis=1, keepdims=True) ### qb-tilda
+        ###====================================================###
+        
+        ###====== Distribution Alignment - eqution (9)'s CE part ======###
+        loss_xeu = tf.nn.softmax_cross_entropy_with_logits(labels=tf.stop_gradient(pseudo_labels),
+                                                   logits=logits_strong)        
+        ###====================================================###
+
+
+        pseudo_mask = tf.to_float(tf.reduce_max(pseudo_labels, axis=1) >= confidence) ### 1(max(qb)>=tau)
         tf.summary.scalar('monitors/mask', tf.reduce_mean(pseudo_mask))
-        loss_xeu = tf.reduce_mean(loss_xeu * pseudo_mask)
+        loss_xeu = tf.reduce_mean(loss_xeu * pseudo_mask) ### 1/muB * sigma 
         tf.summary.scalar('losses/xeu', loss_xeu)
 
         # L2 regularization
