@@ -22,6 +22,7 @@ import random
 import numpy as np
 import tensorflow.compat.v1 as tf
 tf.disable_v2_behavior()
+import tensorflow_addons as tfa
 from absl import flags
 
 from libml import utils, ctaugment
@@ -39,46 +40,108 @@ RANDOM_POLICY_OPS = (
     'Identity', 'AutoContrast', 'Equalize', 'Rotate',
     'Solarize', 'Color', 'Contrast', 'Brightness',
     'Sharpness', 'ShearX', 'TranslateX', 'TranslateY',
-    'Posterize', 'ShearY'
+    'Posterize', 'ShearY', 'GridDistortion'
 )
-AUGMENT_ENUM = 'd x m aa aac ra rac'.split() + ['r%d_%d_%d' % (nops, mag, cutout) for nops, mag, cutout in
+AUGMENT_ENUM = 'd x m aa aac grid ra rac'.split() + ['r%d_%d_%d' % (nops, mag, cutout) for nops, mag, cutout in
                                                 itertools.product(range(1, 5), range(1, 16), range(0, 100, 25))] + [
                    'rac%d' % (mag) for mag in range(1, 10)]
 
 flags.DEFINE_integer('K', 1, 'Number of strong augmentation for unlabeled data.')
 flags.DEFINE_enum('augment', 'd.d',
                   [x + '.' + y for x, y in itertools.product(AUGMENT_ENUM, AUGMENT_ENUM)] +
-                  [x + '.' + y + '.' + z for x, y, z in itertools.product(AUGMENT_ENUM, AUGMENT_ENUM, AUGMENT_ENUM)] + [
-                      'd.d.d.d', 'd.aac.d.aac', 'd.rac.d.rac'],
+                  [x + '.' + y + '.' + z for x, y, z in itertools.product(AUGMENT_ENUM, AUGMENT_ENUM, AUGMENT_ENUM)] +
+                  ['d.d.d.d', 'd.aac.d.aac', 'd.rac.d.rac', 'd.grid'],
                   'Dataset augmentation method (x=identity, m=mirror, d=default, aa=auto-augment, aac=auto-augment+cutout, '
                   'ra=rand-augment, rac=rand-augment+cutout; for rand-augment, magnitude is also randomized'
                   'rxyy=random augment with x ops and magnitude yy),'
                   'first is for labeled data, others are for unlabeled.')
 
-
 def init_pool():
     global POOL
-    if POOL is None:
+    if (POOL is None):
         para = max(1, len(utils.get_available_gpus())) * FLAGS.para_augment
         POOL = multiprocessing.Pool(para)
 
-
 def augment_mirror(x):
     return tf.image.random_flip_left_right(x)
-
 
 def augment_shift(x, w):
     y = tf.pad(x, [[w] * 2, [w] * 2, [0] * 2], mode='REFLECT')
     return tf.random_crop(y, tf.shape(x))
 
-
 def augment_noise(x, std):
     return x + std * tf.random_normal(tf.shape(x), dtype=x.dtype)
 
 
+
+
+def augment_grid_distortion(image, num_cells=5, distort_limit=0.3):
+    print(f"KEHOE - running: augment_grid_distortion() {image}")
+    # Get image dimensions
+    height, width, channels = image.get_shape().as_list()
+
+    # Create a grid
+    x_step = width // num_cells
+    y_step = height // num_cells
+
+    x_points = tf.linspace(0.0, float(width), num_cells + 1)
+    y_points = tf.linspace(0.0, float(height), num_cells + 1)
+
+    # Apply random distortions to the grid points
+    x_distort = tf.random.uniform(shape=[num_cells + 1], minval=-distort_limit * x_step, maxval=distort_limit * x_step)
+    y_distort = tf.random.uniform(shape=[num_cells + 1], minval=-distort_limit * y_step, maxval=distort_limit * y_step)
+
+    distorted_x_points = tf.clip_by_value(x_points + x_distort, 0, float(width))
+    distorted_y_points = tf.clip_by_value(y_points + y_distort, 0, float(height))
+
+    # Create a meshgrid of the distorted points
+    x_mesh, y_mesh = tf.meshgrid(distorted_x_points, distorted_y_points)
+    x_mesh_flat = tf.reshape(x_mesh, [-1])
+    y_mesh_flat = tf.reshape(y_mesh, [-1])
+
+    # Create a mapping from the distorted points to the original grid
+    src_points = tf.stack([y_mesh_flat, x_mesh_flat], axis=-1)
+    src_points = tf.cast(src_points, tf.float32)
+
+    # Generate destination grid
+    dst_points = tf.stack([tf.reshape(tf.linspace(0.0, float(height), height), [-1, 1]) * tf.ones([1, width]),
+                           tf.reshape(tf.linspace(0.0, float(width), width), [1, -1]) * tf.ones([height, 1])], axis=-1)
+    dst_points = tf.reshape(dst_points, [-1, 2])
+
+    # Manually interpolate the image based on the grid points
+    def interpolate(image, x, y):
+        x0 = tf.floor(x)
+        x1 = x0 + 1
+        y0 = tf.floor(y)
+        y1 = y0 + 1
+
+        x0 = tf.clip_by_value(x0, 0, width - 1)
+        x1 = tf.clip_by_value(x1, 0, width - 1)
+        y0 = tf.clip_by_value(y0, 0, height - 1)
+        y1 = tf.clip_by_value(y1, 0, height - 1)
+
+        Ia = tf.gather_nd(image, tf.cast(tf.stack([y0, x0], axis=-1), tf.int32))
+        Ib = tf.gather_nd(image, tf.cast(tf.stack([y1, x0], axis=-1), tf.int32))
+        Ic = tf.gather_nd(image, tf.cast(tf.stack([y0, x1], axis=-1), tf.int32))
+        Id = tf.gather_nd(image, tf.cast(tf.stack([y1, x1], axis=-1), tf.int32))
+
+        wa = tf.expand_dims((x1 - x) * (y1 - y), axis=-1)
+        wb = tf.expand_dims((x1 - x) * (y - y0), axis=-1)
+        wc = tf.expand_dims((x - x0) * (y1 - y), axis=-1)
+        wd = tf.expand_dims((x - x0) * (y - y0), axis=-1)
+
+        return tf.add_n([wa * Ia, wb * Ib, wc * Ic, wd * Id])
+
+    new_x = tf.reshape(dst_points[:, 1], [height, width])
+    new_y = tf.reshape(dst_points[:, 0], [height, width])
+
+    distorted_image = interpolate(image, new_x, new_y)
+
+    return distorted_image
+
+
 def numpy_apply_policy(x, policy):
     return augmentations.apply_policy(policy, x).astype('f')
-
 
 def stack_augment(augment: list):
     def func(x):
@@ -86,7 +149,6 @@ def stack_augment(augment: list):
         return {k: tf.stack([x[k] for x in xl]) for k in xl[0].keys()}
 
     return func
-
 
 class Primitives:
     @staticmethod
@@ -101,10 +163,12 @@ class Primitives:
     def s(shift):
         return lambda x: augment_shift(x['image'], shift)
 
+    @staticmethod
+    def grid_distortion():
+        return lambda x: augment_grid_distortion(x['image'])
 
 AugmentPair = collections.namedtuple('AugmentPair', 'tf numpy')
 PoolEntry = collections.namedtuple('PoolEntry', 'payload batch')
-
 
 class AugmentPool:
     def __init__(self, get_samples):
@@ -113,10 +177,8 @@ class AugmentPool:
     def __call__(self, *args, **kwargs):
         return self.get_samples()
 
-
 NOAUGMENT = AugmentPair(tf=lambda x: dict(image=x['image'], label=x['label'], index=x.get('index', -1)),
                         numpy=AugmentPool)
-
 
 class AugmentPoolAA(AugmentPool):
 
@@ -161,7 +223,6 @@ class AugmentPoolAA(AugmentPool):
         self.queue_images(batch)
         return entry.batch
 
-
 class AugmentPoolAAC(AugmentPoolAA):
 
     def __init__(self, get_samples, policy_group):
@@ -176,7 +237,6 @@ class AugmentPoolAAC(AugmentPoolAA):
         x, policies = arglist
         return np.stack([augmentations.cutout_numpy(augmentations.apply_policy(policy, y)) for y, policy in
                          zip(x, policies)]).astype('f')
-
 
 class AugmentPoolRAM(AugmentPoolAA):
     # Randomized magnitude
@@ -206,7 +266,6 @@ class AugmentPoolRAM(AugmentPoolAA):
                 args.append((x, [policy() for _ in range(x.shape[0])]))
         self.queue.append(PoolEntry(payload=POOL.imap(self.numpy_apply_policies, args), batch=batch))
 
-
 class AugmentPoolRAMC(AugmentPoolRAM):
     # Randomized magnitude (inherited from queue images)
     def __init__(self, get_samples, nops=2, magnitude=10):
@@ -222,7 +281,6 @@ class AugmentPoolRAMC(AugmentPoolRAM):
         x, policies = arglist
         return np.stack([augmentations.cutout_numpy(augmentations.apply_policy(policy, y)) for y, policy in
                          zip(x, policies)]).astype('f')
-
 
 class AugmentPoolRAMC2(AugmentPoolRAM):
     # Randomized magnitude (inherited from queue images)
@@ -267,7 +325,6 @@ class AugmentPoolRAMC2(AugmentPoolRAM):
         self.queue_images(batch)
         return entry.batch
 
-
 class AugmentPoolRA(AugmentPoolAA):
     def __init__(self, get_samples, nops, magnitude, cutout):
         init_pool()
@@ -297,7 +354,6 @@ class AugmentPoolRA(AugmentPoolAA):
             for x in image[:, 1:]:
                 args.append((x, [policy() for _ in range(x.shape[0])], self.size))
         self.queue.append(PoolEntry(payload=POOL.imap(self.numpy_apply_policies, args), batch=batch))
-
 
 class AugmentPoolCTA(AugmentPool):
 
@@ -339,7 +395,6 @@ class AugmentPoolCTA(AugmentPool):
         self.queue_images()
         return entry.batch
 
-
 DEFAULT_AUGMENT = EasyDict(
     cifar10=AugmentPair(tf=lambda x: dict(image=Primitives.ms(4)(x), label=x['label'], index=x.get('index', -1)),
                         numpy=AugmentPool),
@@ -371,7 +426,6 @@ RAND_AUGMENT_CUTOUT = EasyDict({
     for k, v in DEFAULT_AUGMENT.items()
 })
 
-
 def get_augmentation(dataset: str, augmentation: str):
     if augmentation == 'x':
         return NOAUGMENT
@@ -394,36 +448,41 @@ def get_augmentation(dataset: str, augmentation: str):
         nops, mag, cutout = (int(x) for x in augmentation[1:].split('_'))
         return AugmentPair(tf=DEFAULT_AUGMENT[dataset].tf,
                            numpy=functools.partial(AugmentPoolRA, nops=nops, magnitude=mag, cutout=cutout))
+    elif augmentation == 'grid':
+        print("KEHOE - get_augmentation() grid called")
+        return AugmentPair(tf=lambda x: dict(image=Primitives.grid_distortion()(x), label=x['label'], index=x.get('index', -1)),
+                           numpy=AugmentPool)
     else:
         raise NotImplementedError(augmentation)
-
 
 def augment_function(dataset: str):
     augmentations = FLAGS.augment.split('.')
     assert len(augmentations) == 2
+    print(f"\nKEHOE #2 - FLAGS.augment = {FLAGS.augment} \n")
     return [get_augmentation(dataset, x) for x in augmentations]
-
 
 def pair_augment_function(dataset: str):
     augmentations = FLAGS.augment.split('.')
     assert len(augmentations) == 3
+    augmentations[2] = 'grid'  # KEHOE - override strong augment here with grid
     unlabeled = [get_augmentation(dataset, x) for x in augmentations[1:]]
+    print(f"\nKEHOE #3 - FLAGS.augment = {FLAGS.augment} \n \t {[str(x) for x in augmentations[1:]]}")
     return [get_augmentation(dataset, augmentations[0]),
             AugmentPair(tf=stack_augment([x.tf for x in unlabeled]), numpy=unlabeled[-1].numpy)]
-
 
 def quad_augment_function(dataset: str):
     augmentations = FLAGS.augment.split('.')
     assert len(augmentations) == 4
+    print(f"\nKEHOE #4 - FLAGS.augment = {FLAGS.augment} \n")
     labeled = [get_augmentation(dataset, x) for x in augmentations[:2]]
     unlabeled = [get_augmentation(dataset, x) for x in augmentations[2:]]
     return [AugmentPair(tf=stack_augment([x.tf for x in labeled]), numpy=labeled[-1].numpy),
             AugmentPair(tf=stack_augment([x.tf for x in unlabeled]), numpy=unlabeled[-1].numpy)]
 
-
 def many_augment_function(dataset: str):
     augmentations = FLAGS.augment.split('.')
     assert len(augmentations) == 3
+    print(f"\nKEHOE #5 - FLAGS.augment = {FLAGS.augment} \n")
     unlabeled = [get_augmentation(dataset, x) for x in (augmentations[1:2] + augmentations[2:] * FLAGS.K)]
     return [get_augmentation(dataset, augmentations[0]),
             AugmentPair(tf=stack_augment([x.tf for x in unlabeled]), numpy=unlabeled[-1].numpy)]

@@ -59,6 +59,7 @@ class DataSetsFS(data.DataSets):
 
 
 def augment_function(dataset: str):
+    print(f"\nKEHOE #1 - FLAGS.augment = {FLAGS.augment} \n")
     return augment_module.get_augmentation(dataset, FLAGS.augment.split('.')[0])
 
 
