@@ -322,7 +322,7 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
     # Uses 1 / num_classes as initial value (t=0)
     if args.freematch:
         global_threshold = torch.tensor([1 / args.num_classes]).to(args.device)
-        local_threshold = torch.tensor([1 / args.num_classes] * 10).to(args.device)
+        local_threshold = torch.tensor([1 / args.num_classes] * args.num_classes).to(args.device)
 
     model.train()
     for epoch in range(args.start_epoch, args.epochs):
