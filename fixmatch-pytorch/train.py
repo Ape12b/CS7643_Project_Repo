@@ -67,10 +67,6 @@ def de_interleave(x, size):
 
 def main():
     parser = argparse.ArgumentParser(description='PyTorch FixMatch Training')
-    parser.add_argument('--freematch', action="store_true",
-                        help='Freematch implementation using cs7643')
-    parser.add_argument('--ema', default=0.9, type=float,
-                        help='lambda used for global/local threshold ema')
     parser.add_argument('--gpu-id', default='0', type=int,
                         help='id(s) for CUDA_VISIBLE_DEVICES')
     parser.add_argument('--num-workers', type=int, default=4,
@@ -128,6 +124,15 @@ def main():
                         help="For distributed training: local_rank")
     parser.add_argument('--no-progress', action='store_true',
                         help="don't use progress bar")
+    # Arguments for freematch implementation for cs7643
+    parser.add_argument('--freematch', action="store_true",
+                        help='Freematch implementation for cs7643')
+    parser.add_argument('--ema', default=0.9, type=float,
+                        help='lambda used for global/local threshold ema')
+    parser.add_argument('--disable-saf', action="store_true",
+                        help='Disable SAF for Freematch implementation')
+    parser.add_argument('--lambda-f', default=0.01, type=float,
+                        help='coefficient of fairness loss')
 
     args = parser.parse_args()
     global best_acc
@@ -323,6 +328,7 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
     if args.freematch:
         global_threshold = torch.tensor([1 / args.num_classes]).to(args.device)
         local_threshold = torch.tensor([1 / args.num_classes] * args.num_classes).to(args.device)
+        histogram_u_w = torch.tensor([0] * args.num_classes).to(args.device)
 
     model.train()
     for epoch in range(args.start_epoch, args.epochs):
@@ -376,23 +382,64 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
             Lx = F.cross_entropy(logits_x, targets_x, reduction='mean')
 
             pseudo_label = torch.softmax(logits_u_w.detach()/args.T, dim=-1)
-            max_probs, targets_u = torch.max(pseudo_label, dim=-1)
+            max_probs_u_w, targets_u_w = torch.max(pseudo_label, dim=-1)
+            
             if args.freematch:
-                global_threshold = args.ema * global_threshold + (1 - args.ema) * torch.mean(max_probs)
+                # global threshold as EMA of average per-sample maximum probability
+                global_threshold = args.ema * global_threshold + (1 - args.ema) * torch.mean(max_probs_u_w)
+                
+                # local threshold as EMA of class-specific softmax probabilities
                 local_threshold = args.ema * local_threshold + (1 - args.ema) * torch.mean(pseudo_label, dim=0)
+                
+                # SAT as MAXNORM(local_threshold) * global threshold
                 self_adaptive_threshold = local_threshold / torch.max(local_threshold) * global_threshold
-                mask = max_probs.ge(self_adaptive_threshold[targets_u]).float()
-                # logger.info(f"\nGlobal Threshold Update : {global_threshold}")
-                # logger.info(f"\nLocal Threshold Update : {local_threshold}")
-                # logger.info(f"\nAdaptive Threshold Update : {self_adaptive_threshold}")
-                # logger.info(f"\nThreshold mask Update : {mask}")
+                
+                # Add boolean mask step to extract masked distribution later
+                mask_tf = max_probs_u_w.ge(self_adaptive_threshold[targets_u_w])
+                mask = mask_tf.float()
+
+                if not args.disable_saf:
+                    # Calculate softmax probability output of strongly augmented samples 
+                    label_u_s = torch.softmax(logits_u_s, dim=-1)
+                    _, targets_u_s = torch.max(label_u_s, dim=-1)
+
+                    # histogram for weakly augmented samples 
+                    histogram_batch_u_w = torch.histc(targets_u_w,
+                                                  bins=args.num_classes,
+                                                  min=0,
+                                                  max=args.num_classes)
+
+                    histogram_u_w = args.ema * histogram_u_w + (1 - args.ema) * histogram_batch_u_w
+
+                    # masked probability distribution on strongly augmented data
+                    prob_dist_u_s = torch.sum(label_u_s[mask_tf], dim=0) / (args.mu * args.batch_size)
+
+                    # histogram for strongly augmented sample labels
+                    histogram_u_s = torch.histc(targets_u_s[mask_tf],
+                                                      bins=args.num_classes,
+                                                      min=0,
+                                                      max=args.num_classes)
+                    
+                    # Expectation of prediction distribution for safe-adaptive fairness (SAF)
+                    sumnorm_ema = local_threshold / (histogram_u_w + 1) / torch.sum(local_threshold / (histogram_u_w + 1)) # Add 1 for stability
+                    sumnorm_batch = prob_dist_u_s / (histogram_u_s + 1) / torch.sum(prob_dist_u_s / (histogram_u_s + 1)) # Add 1 for stability
+
             else:
-                mask = max_probs.ge(args.threshold).float()
+                mask = max_probs_u_w.ge(args.threshold).float()
 
-            Lu = (F.cross_entropy(logits_u_s, targets_u,
+            Lu = (F.cross_entropy(logits_u_s, targets_u_w,
                                   reduction='none') * mask).mean()
+            
+            if not args.disable_saf:
 
-            loss = Lx + args.lambda_u * Lu
+                # self-adjusted fairness loss
+                Lf = -1 * (F.cross_entropy(sumnorm_ema, sumnorm_batch,
+                                          reduction='none'))
+                
+                # Update loss function with fairness term
+                loss = Lx + args.lambda_u * Lu + args.lambda_f * Lf
+            else:
+                loss = Lx + args.lambda_u * Lu
 
             if args.amp:
                 with amp.scale_loss(loss, optimizer) as scaled_loss:
