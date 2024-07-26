@@ -430,14 +430,13 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
             Lu = (F.cross_entropy(logits_u_s, targets_u_w,
                                   reduction='none') * mask).mean()
             
-            if not args.disable_saf:
-
+            if args.freematch and not args.disable_saf:
                 # self-adjusted fairness loss
                 Lf = -1 * (F.cross_entropy(sumnorm_ema, sumnorm_batch,
                                           reduction='none'))
-                
                 # Update loss function with fairness term
                 loss = Lx + args.lambda_u * Lu + args.lambda_f * Lf
+
             else:
                 loss = Lx + args.lambda_u * Lu
 
