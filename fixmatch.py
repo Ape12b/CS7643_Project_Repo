@@ -42,6 +42,14 @@ class AugmentPoolCTACutOut(augment.AugmentPoolCTA):
         return dict(image=np.stack([x[0]] + [ctaugment.apply(y, cutout_policy()) for y in x[1:]]).astype('f'))
 
 
+def largest_divisor(n, max_divisor):
+    """Finds the largest divisor of n that is less than or equal to max_divisor."""
+    for i in range(max_divisor, 0, -1):
+        if n % i == 0:
+            return i
+    return 1
+
+
 class FixMatch(CTAReMixMatch):
     AUGMENT_POOL_CLASS = AugmentPoolCTACutOut
 
@@ -87,8 +95,7 @@ class FixMatch(CTAReMixMatch):
         hwc = [self.dataset.height, self.dataset.width, self.dataset.colors]
         xt_in = tf.compat.v1.placeholder(tf.float32, [batch] + hwc, 'xt')  # Training labeled
         x_in = tf.compat.v1.placeholder(tf.float32, [None] + hwc, 'x')  # Eval images
-        # y_in = tf.compat.v1.placeholder(tf.float32, [batch * uratio, 2] + hwc, 'y')  # Training unlabeled (weak, strong)
-        y_in = tf.placeholder(tf.float32, [batch * uratio, FLAGS.K + 1] + hwc, 'y')  ### Augmentation Anchoring - Training unlabeled (weak, strong1, strong2, ...)
+        y_in = tf.placeholder(tf.float32, [batch * uratio, FLAGS.K + 1] + hwc, 'y')
         l_in = tf.compat.v1.placeholder(tf.int32, [batch], 'labels')  # Labels
 
         lrate = tf.clip_by_value(tf.to_float(self.step) / (FLAGS.train_kimg << 10), 0, 1)
@@ -98,21 +105,30 @@ class FixMatch(CTAReMixMatch):
         # Compute logits for xt_in and y_in
         classifier = lambda x, **kw: self.classifier(x, **kw, **kwargs).logits
         skip_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
-        #x = utils.interleave(tf.concat([xt_in, y_in[:, 0], y_in[:, 1]], 0), 2 * uratio + 1) # OG
-        ### x = utils.interleave(tf.concat([xt_in] + [y_in[:, i] for i in range(FLAGS.K + 1)], 0), FLAGS.K + 2) ### Augmentation Anchoring - ver 1
-        ### x = utils.interleave(tf.concat([xt_in, y_in[:, 0], tf.reshape(y_in[:, 1:], [-1] + hwc)], 0), (FLAGS.K + 2) * uratio + 1) ### Augmentation Anchoring - ver 2
-        x = utils.interleave(tf.concat([xt_in] + [y_in[:, i] for i in range(FLAGS.K + 1)], 0), (FLAGS.K + 2) * uratio + 1) ### Augmentation Anchoring - ver 3
-        
+
+        # Check the shapes of tensors being concatenated
+        concat_list = [xt_in] + [y_in[:, i] for i in range(FLAGS.K + 1)]
+        print("Shapes of tensors to concatenate:",
+              [tensor.get_shape().as_list() for tensor in concat_list])  # Debugging statement
+        x_concat = tf.concat(concat_list, 0)
+        print("Shape of concatenated tensor:", x_concat.get_shape().as_list())  # Debugging statement
+
+        # Calculate a valid batch size
+        total_samples = x_concat.get_shape().as_list()[0]
+        initial_batch_size = total_samples // ((FLAGS.K + 2) * uratio + 1)
+        valid_batch_size = largest_divisor(total_samples, initial_batch_size)
+        print(f"Calculated valid batch size: {valid_batch_size}")
+
+        x = utils.interleave(x_concat, valid_batch_size)
+
         logits = utils.para_cat(lambda x: classifier(x, training=True), x)
-        #logits = utils.de_interleave(logits, 2 * uratio+1)
-        ###logits = utils.de_interleave(logits, FLAGS.K + 2) ### Augmentation Anchoring - ver 1
-        logits = utils.de_interleave(logits, (FLAGS.K + 2) * uratio + 1) ### Augmentation Anchoring - ver 2, 3
+        logits = utils.de_interleave(logits, valid_batch_size)  ### Augmentation Anchoring - ver 2, 3
 
         post_ops = [v for v in tf.get_collection(tf.GraphKeys.UPDATE_OPS) if v not in skip_ops]
         logits_x = logits[:batch]
-        # logits_weak, logits_strong = tf.split(logits[batch:], 2)
-        logits_weak = logits[batch:batch*(uratio+1)] ### Augmentation Anchoring
-        logits_strong = tf.reshape(logits[batch*(uratio+1):], [batch*uratio, FLAGS.K, -1]) ### Augmentation Anchoring
+        logits_weak = logits[batch:batch * (uratio + 1)]  ### Augmentation Anchoring
+        logits_strong = tf.reshape(logits[batch * (uratio + 1):],
+                                   [batch * uratio, FLAGS.K, -1])  ### Augmentation Anchoring
         del logits, skip_ops
 
         # Labeled cross-entropy
@@ -122,13 +138,10 @@ class FixMatch(CTAReMixMatch):
 
         # Pseudo-label cross entropy for unlabeled data
         pseudo_labels = tf.stop_gradient(tf.nn.softmax(logits_weak))
-        # loss_xeu = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=tf.argmax(pseudo_labels, axis=1),
-        #                                                           logits=logits_strong)
-
-        loss_xeu = tf.nn.sparse_softmax_cross_entropy_with_logits( ### Augmentation Anchoring
+        loss_xeu = tf.nn.sparse_softmax_cross_entropy_with_logits(
             labels=tf.tile(tf.expand_dims(tf.argmax(pseudo_labels, axis=1), 1), [1, FLAGS.K]),
             logits=logits_strong)
-        loss_xeu = tf.reduce_mean(loss_xeu, axis=1) ### Augmentation Anchoring -  Average over K strong augmentations 
+        loss_xeu = tf.reduce_mean(loss_xeu, axis=1)  ### Augmentation Anchoring - Average over K strong augmentations
         pseudo_mask = tf.to_float(tf.reduce_max(pseudo_labels, axis=1) >= confidence)
         tf.summary.scalar('monitors/mask', tf.reduce_mean(pseudo_mask))
         loss_xeu = tf.reduce_mean(loss_xeu * pseudo_mask)

@@ -225,7 +225,18 @@ def para_cat(fn, *args):
 
 def interleave(x, batch):
     s = x.get_shape().as_list()
-    return tf.reshape(tf.transpose(tf.reshape(x, [-1, batch] + s[1:]), [1, 0] + list(range(2, 1+len(s)))), [-1] + s[1:])
+    print("Shape before interleave:", s)  # Debugging statement
+    total_samples = s[0]
+    num_batches = total_samples // batch
+    assert total_samples % batch == 0, f"Total samples {total_samples} is not divisible by batch size {batch}"
+
+    reshaped = tf.reshape(x, [num_batches, batch] + s[1:])
+    print("Shape after reshape:", reshaped.get_shape().as_list())  # Debugging statement
+    transposed = tf.transpose(reshaped, [1, 0] + list(range(2, 1 + len(s))))
+    print("Shape after transpose:", transposed.get_shape().as_list())  # Debugging statement
+    final_shape = tf.reshape(transposed, [-1] + s[1:])
+    print("Final shape:", final_shape.get_shape().as_list())  # Debugging statement
+    return final_shape
 
 
 def de_interleave(x, batch):
