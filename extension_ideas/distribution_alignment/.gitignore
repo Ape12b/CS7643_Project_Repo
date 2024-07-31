@@ -1,0 +1,6 @@
+data
+.git
+.idea
+__pycache__
+myenv
+experiments
