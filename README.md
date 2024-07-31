@@ -10,7 +10,15 @@ List of directory / contributions
 |
 |- (Folder for AB)
 |
-|- (Folder for Zoe)
+|- extension_ideas          # Folder containing subfolders for Augmentation Anchoring & Distribution Alignment experiments
+|    |- augmentation_anchoring/     # Folder containing Yujeong Lozalee & Xander Kehoe's input. Forked from FixMatch repository.
+|    |    |- fixmatch.py             # Contains main code modifications for incorporating Augmentation Anchoring into FixMatch. 
+|    |                               		(fixmatch_aa_ver1.py & fixmatch_aa_ver2.py files are archived code files)
+|    |    |- libml/
+|    |    |    |- augment.py         # Contains minor code modifications
+|    |    |    |- utils.py           # Contains minor code modifications
+|    |- distribution_alignment/      # Folder containing Yujeong Lozalee's input. Forked from FixMatch repository.
+|    |    |- fixmatch.py             # Contains main code modifications for incorporating Distribution Alignment into FixMatch. 
 |
 |- (Folder for Xander)
 ```
