@@ -8,7 +8,14 @@ List of directory / contributions
 |                             Use with additional arguments for freematch implementation: 
 |                             --freematch, --ema, --disable-saf, --lambda-f
 |
-|- (Folder for AB)
+|- fix_match_AB        # Folder containing Apratim Bajpai's implementation of FixMatch.
+|    |- main.py            # Function required to run FixMatch on Cifar10 dataset.
+|    |- datasets.py            # Function required to generate labelled and unlabbeled Cifar10 dataset.
+|    |- ema.py            # Implementation of Exponential moving averages
+|    |- get_wide_resnet.py            # Creating a wide resnet
+|    |- randaugment.py            # Implementation of random augmentation
+|    |- test_train.py            # Function for training and evaluation
+|    |- utils.py            # Collection of utility functions
 |
 |- extension_ideas          # Folder containing subfolders for Augmentation Anchoring & Distribution Alignment experiments
 |    |- augmentation_anchoring/     # Folder containing Yujeong Lozalee & Xander Kehoe's input. Forked from FixMatch repository.
